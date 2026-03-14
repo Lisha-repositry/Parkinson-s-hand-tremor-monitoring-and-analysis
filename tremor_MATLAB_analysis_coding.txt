@@ -1,0 +1,112 @@
+%% -----------------------------
+% REAL-TIME TREMOR ANALYSIS (robust demo)
+% Parkinson’s Tremor Monitoring System - MATLAB
+%% -----------------------------
+
+clc; clear; close all;
+
+%% ----- USER DATA INPUT -----
+% If you already have variables named `mpu` and `flex` in workspace,
+% the script will use them. Otherwise it uses small synthetic demo signals.
+if exist('mpu','var') && exist('flex','var')
+    mpu_data  = mpu(:);   % force column
+    flex_data = flex(:);
+    fprintf("Using workspace variables 'mpu' and 'flex'.\n");
+else
+    % Demo synthetic signals (replace with your data later)
+    fs = 50;                    % sampling rate
+    t  = (0:1/fs:10-1/fs)';     % 10 seconds
+    % synthetic tremor ~5 Hz for demo
+    mpu_data  = 0.5*sin(2*pi*5*t) + 0.05*randn(size(t));
+    flex_data = 0.3*sin(2*pi*5*t + pi/6) + 0.05*randn(size(t));
+    fprintf("No 'mpu'/'flex' in workspace — running demo signals (10 s, 50 Hz).\n");
+end
+
+% If fs was not set above, set default
+if ~exist('fs','var'), fs = 50; end
+
+%% 1. Pre-check lengths
+N1 = length(mpu_data);
+N2 = length(flex_data);
+if N1 ~= N2
+    warning("mpu and flex data lengths differ: %d vs %d. Truncating to min length.", N1, N2);
+    Nmin = min(N1,N2);
+    mpu_data  = mpu_data(1:Nmin);
+    flex_data = flex_data(1:Nmin);
+end
+N = length(mpu_data);
+
+%% 2. Band-pass filter (3–7 Hz)
+% If `bandpass` function exists use it; otherwise implement a simple FIR bandpass.
+if exist('bandpass','file')
+    filtered_mpu  = bandpass(mpu_data,  [3 7], fs);
+    filtered_flex = bandpass(flex_data, [3 7], fs);
+else
+    % Simple FIR bandpass using designfilt if available, else butter
+    if exist('butter','file')
+        [b,a] = butter(4, [3 7]/(fs/2), 'bandpass');   % 4th order Butterworth
+        filtered_mpu  = filtfilt(b,a, mpu_data);
+        filtered_flex = filtfilt(b,a, flex_data);
+    else
+        error("No bandpass/butter available. Install Signal Processing Toolbox or provide filtered data.");
+    end
+end
+
+%% 3. RMS Calculation (manual to avoid toolbox dependency)
+rms_mpu  = sqrt(mean(filtered_mpu.^2));
+rms_flex = sqrt(mean(filtered_flex.^2));
+
+%% 4. FFT Calculation (use positive frequencies only)
+FFT_mpu_full  = fft(filtered_mpu);
+FFT_flex_full = fft(filtered_flex);
+f_axis = (0:N-1)*(fs/N);            % full axis
+% Single-sided spectrum
+halfN = floor(N/2)+1;
+FFT_mpu  = abs(FFT_mpu_full(1:halfN))/N * 2;
+FFT_flex = abs(FFT_flex_full(1:halfN))/N * 2;
+f_single = f_axis(1:halfN);
+
+%% 5. Tremor Detection Threshold and Decision Logic
+rms_threshold = 0.25;    % adjust later
+% If you want dynamic threshold, you can compute baseline RMS here
+mpu_tremor  = rms_mpu  > rms_threshold;
+flex_tremor = rms_flex > rms_threshold;
+
+% Combine rules:
+% - If either sensor detects tremor -> tremor detected (covers wrist-only or pill-only)
+% - If both detect -> high confidence
+if mpu_tremor && flex_tremor
+    tremor_status = "Tremor Detected (High confidence)";
+elseif mpu_tremor || flex_tremor
+    tremor_status = "Tremor Detected";
+else
+    tremor_status = "No Tremor";
+end
+
+fprintf("Tremor Status: %s\n", tremor_status);
+fprintf("MPU RMS: %.4f    Flex RMS: %.4f    Threshold: %.4f\n", rms_mpu, rms_flex, rms_threshold);
+
+%% 6. Plot Time-Domain and Frequency-Domain
+figure('Units','normalized','Position',[0.1 0.1 0.7 0.7]);
+
+subplot(3,1,1);
+plot((0:N-1)/fs, filtered_mpu); grid on;
+title("MPU6050 Filtered Tremor Signal (Time Domain)");
+xlabel("Time (s)"); ylabel("Amplitude");
+
+subplot(3,1,2);
+plot((0:N-1)/fs, filtered_flex); grid on;
+title("Flex Sensor Filtered Signal (Time Domain)");
+xlabel("Time (s)"); ylabel("Amplitude");
+
+subplot(3,1,3);
+plot(f_single, FFT_mpu); hold on;
+plot(f_single, FFT_flex); grid on;
+xlim([0 15]);    % PD tremor < 10 Hz, but show up to 15 Hz
+legend("MPU","Flex");
+title("Single-Sided Frequency Spectrum (FFT)");
+xlabel("Frequency (Hz)"); ylabel("Magnitude");
+
+%% 7. Mark detection on figure (optional)
+sgtitle(string(tremor_status));
+
